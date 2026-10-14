@@ -28,6 +28,8 @@ Usage:
   remotectrl build [flags]    build remotely only
   remotectrl sync [flags]     sync the last remote build here and install + launch (no build)
   remotectrl doctor [flags]   check local and remote prerequisites
+  remotectrl list [devices|schemes] [flags]
+                              list local simulators and/or the remote project's schemes
 
 Common flags (override the config file):
   --host --dir --workspace --project --scheme --target --configuration --arch --device
@@ -54,6 +56,8 @@ func main() {
 		err = cmdBuild(args)
 	case "doctor":
 		err = cmdDoctor(args)
+	case "list":
+		err = cmdList(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -77,7 +81,7 @@ func (o *overrides) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.Scheme, "scheme", "", "scheme to build")
 	fs.StringVar(&o.Target, "target", "", "app target when the scheme builds several")
 	fs.StringVar(&o.Configuration, "configuration", "", "build configuration (default Debug)")
-	fs.StringVar(&o.Arch, "arch", "", "force ARCHS for the remote build (arm64|x86_64)")
+	fs.StringVar(&o.Arch, "arch", "", "ARCHS for the remote build (arm64|x86_64; default: this Mac's arch)")
 	fs.StringVar(&o.Simulator, "device", "", `simulator: "booted" (default), name, or UDID`)
 }
 
@@ -113,8 +117,6 @@ func loadConfig(o *overrides) (config.Config, error) {
 	return c, c.Validate()
 }
 
-func step(format string, a ...any) { fmt.Printf("\033[1m==> "+format+"\033[0m\n", a...) }
-
 var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 // localAppDir is the persistent per-project mirror that rsync diffs against, so
@@ -141,7 +143,7 @@ func cmdBuild(args []string) error {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	var o overrides
 	o.bind(fs)
-	raw := fs.Bool("raw", false, "don't pipe through xcbeautify")
+	opts := bindBuild(fs)
 	fs.Parse(args)
 	c, err := loadConfig(&o)
 	if err != nil {
@@ -151,13 +153,22 @@ func cmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	return build(r, c, *raw)
+	return build(r, c, *opts)
 }
 
-func build(r *remote.Remote, c config.Config, raw bool) error {
+// bindBuild registers the flags that shape the remote build.
+func bindBuild(fs *flag.FlagSet) *xcode.Options {
+	var o xcode.Options
+	fs.BoolVar(&o.Raw, "raw", false, "don't pipe xcodebuild through xcbeautify")
+	fs.BoolVar(&o.NoGenerate, "no-generate", false, "Tuist projects: skip `tuist generate` (manifests and file set unchanged)")
+	fs.BoolVar(&o.TuistInstall, "tuist-install", false, "Tuist projects: force `tuist install` even if Tuist/.build exists")
+	return &o
+}
+
+func build(r *remote.Remote, c config.Config, opts xcode.Options) error {
 	step("Building %s (%s) on %s", c.Scheme, c.Configuration, c.Host)
 	t := time.Now()
-	if err := xcode.Build(r, c, raw); err != nil {
+	if err := xcode.Build(r, c, opts); err != nil {
 		return fmt.Errorf("remote build failed: %w", err)
 	}
 	fmt.Printf("built in %s\n", time.Since(t).Round(time.Millisecond))
@@ -169,7 +180,7 @@ func cmdRun(args []string, withBuild bool) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var o overrides
 	o.bind(fs)
-	raw := fs.Bool("raw", false, "don't pipe the build through xcbeautify")
+	opts := bindBuild(fs)
 	console := fs.Bool("console", false, "stay attached and stream the app's stdout/stderr")
 	fs.Parse(args)
 	c, err := loadConfig(&o)
@@ -181,7 +192,7 @@ func cmdRun(args []string, withBuild bool) error {
 		return err
 	}
 	if withBuild {
-		if err := build(r, c, *raw); err != nil {
+		if err := build(r, c, *opts); err != nil {
 			return err
 		}
 	}
@@ -249,6 +260,10 @@ func cmdInit(args []string) error {
 	r, err := connect(c)
 	if err != nil {
 		return err
+	}
+	// Tuist projects have no workspace on a fresh clone; generate before discovering.
+	if err := xcode.Prepare(r, c.Dir, xcode.Options{}); err != nil {
+		return fmt.Errorf("preparing Tuist project: %w", err)
 	}
 	ws, proj, schemes, err := xcode.Discover(r, c.Dir)
 	if err != nil {
@@ -328,11 +343,117 @@ func cmdDoctor(args []string) error {
 	} else {
 		fmt.Println("  - xcbeautify not installed (optional; prettier build logs)")
 	}
+	if isTuist, v, err := xcode.TuistVersion(r, c.Dir); err != nil {
+		check("tuist", err, "")
+	} else if isTuist {
+		check("tuist project", nil, "(tuist "+v+")")
+	} else {
+		fmt.Println("  - not a Tuist project")
+	}
 	_, err = xcode.Locate(r, c)
 	check("scheme "+c.Scheme, err, "builds an iOS app")
 
 	if failed {
 		return fmt.Errorf("doctor found problems")
+	}
+	return nil
+}
+
+// cmdList prints local simulators and remote schemes, marking what the current
+// config would use. Subject may be given before or after the flags.
+func cmdList(args []string) error {
+	subject := "all"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		subject, args = args[0], args[1:]
+	}
+	if subject != "all" && subject != "devices" && subject != "schemes" {
+		return fmt.Errorf("unknown list subject %q (want devices or schemes)", subject)
+	}
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	var o overrides
+	o.bind(fs)
+	fs.Parse(args)
+
+	base, _, err := config.Load()
+	if err != nil {
+		return err
+	}
+	c := o.merge(base)
+	c.ApplyDefaults()
+
+	if subject != "schemes" {
+		devs, err := sim.List()
+		if err != nil {
+			return err
+		}
+		selected, _ := sim.Resolve(c.Simulator)
+		fmt.Println(bold("Simulators"))
+		if len(devs) == 0 {
+			fmt.Println(dim("  none available"))
+		}
+		nameW := 0
+		for _, d := range devs {
+			nameW = max(nameW, len(d.Name))
+		}
+		for _, d := range devs {
+			mark, note := " ", ""
+			if d.UDID == selected.UDID {
+				mark, note = green("●"), dim("  ← selected")
+			}
+			state := pad(d.State, 9)
+			if d.Booted() {
+				state = green(state)
+			} else {
+				state = dim(state)
+			}
+			fmt.Printf("  %s %s  iOS %s  %s  %s%s\n",
+				mark, pad(d.Name, nameW), pad(d.IOSVersion(), 5), state, dim(d.UDID), note)
+		}
+		if subject == "all" {
+			fmt.Println()
+		}
+	}
+
+	if subject != "devices" {
+		if c.Host == "" || c.Dir == "" {
+			if subject == "schemes" {
+				return fmt.Errorf("listing schemes needs host and dir (run `remotectrl init` or pass --host/--dir)")
+			}
+			fmt.Println(bold("Schemes"))
+			fmt.Println(dim("  no host/dir configured; run `remotectrl init`"))
+			return nil
+		}
+		r, err := connect(c)
+		if err != nil {
+			return err
+		}
+		schemes, err := xcode.Schemes(r, c.Dir, c.Workspace, c.Project)
+		if err != nil {
+			return err
+		}
+		fmt.Println(bold("Schemes") + dim("  "+c.Host+":"+c.Dir))
+		if c.Workspace != "" {
+			fmt.Println(dim("  workspace " + c.Workspace + "\n"))
+		} else if c.Project != "" {
+			fmt.Println(dim("  project " + c.Project + "\n"))
+		}
+		found := false
+		for _, s := range schemes {
+			if s == c.Scheme {
+				found = true
+				fmt.Printf("  %s %s%s\n", green("●"), bold(s), dim("  ← configured"))
+			} else {
+				fmt.Printf("  %s %s\n", dim("○"), s)
+			}
+		}
+		switch {
+		case len(schemes) == 0:
+			fmt.Println(dim("  no schemes found"))
+		case c.Scheme != "" && !found:
+			fmt.Printf("  %s configured scheme %q is not in this project\n", yellow("!"), c.Scheme)
+		case c.Scheme == "":
+			fmt.Println(dim("\n  choose one with: remotectrl run --scheme <name>"))
+		}
 	}
 	return nil
 }

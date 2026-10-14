@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,7 +21,8 @@ type Device struct {
 
 func (d Device) Booted() bool { return d.State == "Booted" }
 
-func list() ([]Device, error) {
+// List returns all available iOS simulators, newest runtime first, then by name.
+func List() ([]Device, error) {
 	out, err := exec.Command("xcrun", "simctl", "list", "devices", "available", "-j").Output()
 	if err != nil {
 		return nil, fmt.Errorf("simctl list: %w", err)
@@ -41,7 +43,26 @@ func list() ([]Device, error) {
 			all = append(all, d)
 		}
 	}
+	sort.Slice(all, func(i, j int) bool {
+		vi, vj := runtimeVersion(all[i].Runtime), runtimeVersion(all[j].Runtime)
+		if !equal(vi, vj) {
+			return newer(vi, vj)
+		}
+		return all[i].Name < all[j].Name
+	})
 	return all, nil
+}
+
+func equal(a, b []int) bool { return !newer(a, b) && !newer(b, a) }
+
+// IOSVersion is the runtime's iOS version, e.g. "26.2".
+func (d Device) IOSVersion() string {
+	v := runtimeVersion(d.Runtime)
+	s := make([]string, len(v))
+	for i, n := range v {
+		s[i] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ".")
 }
 
 // runtimeVersion parses "...SimRuntime.iOS-26-2" into [26 2].
@@ -70,7 +91,7 @@ func newer(a, b []int) bool {
 // Resolve picks a device from spec: "booted", a UDID, or a name (newest iOS
 // runtime wins; an already-booted match is preferred).
 func Resolve(spec string) (Device, error) {
-	devs, err := list()
+	devs, err := List()
 	if err != nil {
 		return Device{}, err
 	}

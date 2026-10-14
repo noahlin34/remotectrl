@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/BurntSushi/toml"
 )
@@ -24,7 +25,9 @@ type Config struct {
 	// Target picks the app target when a scheme builds more than one app.
 	Target        string `toml:"target,omitempty"`
 	Configuration string `toml:"configuration,omitempty"`
-	// Arch optionally forces ARCHS (arm64 / x86_64) for the remote build.
+	// Arch is the ARCHS value for the remote build. It defaults to this Mac's
+	// architecture (arm64 on Apple silicon), since the simulator runs here;
+	// without it a generic simulator build compiles every arch.
 	Arch string `toml:"arch,omitempty"`
 	// Simulator is "booted", a device name, or a UDID.
 	Simulator string `toml:"simulator,omitempty"`
@@ -37,6 +40,16 @@ func (c *Config) ApplyDefaults() {
 	if c.Simulator == "" {
 		c.Simulator = "booted"
 	}
+	if c.Arch == "" {
+		c.Arch = localArch()
+	}
+}
+
+func localArch() string {
+	if runtime.GOARCH == "amd64" {
+		return "x86_64"
+	}
+	return runtime.GOARCH
 }
 
 func (c Config) Validate() error {

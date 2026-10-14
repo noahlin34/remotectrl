@@ -53,12 +53,16 @@ func quoteAll(args []string) string {
 	return strings.Join(q, " ")
 }
 
-// Build runs xcodebuild on the remote, piping through xcbeautify when it is
-// installed there (unless raw).
-func Build(r *remote.Remote, c config.Config, raw bool) error {
+// Build runs xcodebuild on the remote. Tuist projects are installed/generated
+// first. Output is piped through xcbeautify when it is installed there (unless
+// o.Raw).
+func Build(r *remote.Remote, c config.Config, o Options) error {
 	cmd := "xcodebuild " + quoteAll(buildArgs(c)) + " build"
 	script := "set -o pipefail\ncd " + remote.DirExpr(c.Dir) + " || exit 1\n"
-	if raw {
+	if !o.NoGenerate {
+		script += tuistPrepare(o)
+	}
+	if o.Raw {
 		script += cmd
 	} else {
 		script += "if command -v xcbeautify >/dev/null 2>&1; then " + cmd + " 2>&1 | xcbeautify; else " + cmd + "; fi"
@@ -132,19 +136,31 @@ func Discover(r *remote.Remote, dir string) (workspace, project string, schemes 
 			projs = append(projs, l)
 		}
 	}
-	var flag string
 	switch {
 	case len(wss) > 0:
-		workspace, flag = wss[0], "-workspace "+remote.Quote(wss[0])
+		workspace = wss[0]
 	case len(projs) > 0:
-		project, flag = projs[0], "-project "+remote.Quote(projs[0])
+		project = projs[0]
 	default:
 		return "", "", nil, fmt.Errorf("no .xcworkspace or .xcodeproj directly in %s", dir)
 	}
+	schemes, err = Schemes(r, dir, workspace, project)
+	return workspace, project, schemes, err
+}
 
-	out, err = r.Output("cd " + remote.DirExpr(dir) + " || exit 1\nxcodebuild -list -json " + flag + " 2>/dev/null")
+// Schemes lists the schemes of the given workspace or project (relative to
+// dir). With neither set, xcodebuild auto-detects a lone project in dir.
+func Schemes(r *remote.Remote, dir, workspace, project string) ([]string, error) {
+	var flag string
+	switch {
+	case workspace != "":
+		flag = "-workspace " + remote.Quote(workspace)
+	case project != "":
+		flag = "-project " + remote.Quote(project)
+	}
+	out, err := r.Output("cd " + remote.DirExpr(dir) + " || exit 1\nxcodebuild -list -json " + flag + " 2>/dev/null")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("xcodebuild -list: %w", err)
+		return nil, fmt.Errorf("xcodebuild -list: %w", err)
 	}
 	if i := bytes.IndexByte(out, '{'); i >= 0 {
 		out = out[i:]
@@ -154,8 +170,7 @@ func Discover(r *remote.Remote, dir string) (workspace, project string, schemes 
 		Project   struct{ Schemes []string } `json:"project"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&list); err != nil {
-		return "", "", nil, fmt.Errorf("parsing xcodebuild -list: %w", err)
+		return nil, fmt.Errorf("parsing xcodebuild -list: %w", err)
 	}
-	schemes = append(list.Workspace.Schemes, list.Project.Schemes...)
-	return workspace, project, schemes, nil
+	return append(list.Workspace.Schemes, list.Project.Schemes...), nil
 }
