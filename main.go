@@ -119,16 +119,12 @@ func loadConfig(o *overrides) (config.Config, error) {
 
 var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-// localAppDir is the persistent per-project mirror that rsync diffs against, so
+// localAppDir is the per-project mirror under /tmp that rsync diffs against, so
 // rebuilds only transfer changed files.
-func localAppDir(c config.Config) (string, error) {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
+func localAppDir(c config.Config) string {
 	sum := sha1.Sum([]byte(c.Dir + "\x00" + c.Scheme))
 	key := unsafeChars.ReplaceAllString(c.Host, "_") + "-" + hex.EncodeToString(sum[:4])
-	return filepath.Join(cache, "remotectrl", key), nil
+	return filepath.Join("/tmp", "remotectrl", key)
 }
 
 func connect(c config.Config) (*remote.Remote, error) {
@@ -201,10 +197,7 @@ func cmdRun(args []string, withBuild bool) error {
 	if err != nil {
 		return err
 	}
-	dir, err := localAppDir(c)
-	if err != nil {
-		return err
-	}
+	dir := localAppDir(c)
 	local := filepath.Join(dir, app.Name)
 
 	step("Syncing %s", app.Name)
