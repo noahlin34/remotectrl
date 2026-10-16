@@ -13,7 +13,7 @@ Module: `github.com/noahlin34/remotectrl`. Go 1.25. One external dependency: `gi
 ```
 main.go                       CLI entrypoint, subcommands, flag binding, orchestration
 ui.go                         Terminal helpers: step(), bold/dim/green/yellow, pad(), color gating
-internal/config/config.go     .remotectrl.toml schema, defaults, validation, discovery, save
+internal/config/config.go     config schema, defaults, validation, discovery, save
 internal/remote/remote.go     ssh (ControlMaster), remote Run/Output, rsync Pull, shell quoting
 internal/xcode/xcode.go       xcodebuild build/-list/-showBuildSettings on the remote; locating the .app
 internal/xcode/tuist.go       Tuist detection, tuist install/generate on the remote
@@ -26,7 +26,7 @@ Keep this split. Remote shell work belongs in `internal/remote` and `internal/xc
 
 | Command | What it does |
 |---|---|
-| `init` | Runs Tuist prepare if needed, discovers the workspace/project and schemes on the remote, writes `.remotectrl.toml` (or `--global`). |
+| `init` | Runs Tuist prepare if needed, discovers the workspace/project and schemes on the remote, writes `remotectrl.toml` in the project or `~/.config/remotectrl` (`--global`). |
 | `run` | Build remotely, sync the `.app`, install, and launch. |
 | `sync` | Sync the last remote build, install, and launch. No build. |
 | `build` | Build remotely only. |
@@ -37,7 +37,7 @@ Run `remotectrl help` for the usage text. The usage string in `main.go` is the s
 
 ## Configuration
 
-- Project file: `.remotectrl.toml`, found by walking up from the cwd. Fallback: `~/.config/remotectrl/config.toml`.
+- Global file: `~/.config/remotectrl/remotectrl.toml`. It wins when present. Project fallback: `.remotectrl.toml`, found by walking up from the cwd.
 - Precedence: CLI flags override the config file (`overrides.merge`). Defaults are applied afterwards (`ApplyDefaults`), then validated.
 - Required keys: `host`, `dir`, `scheme`.
 - `workspace` and `project` are mutually exclusive. Setting a flag for one replaces both.

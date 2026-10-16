@@ -23,7 +23,7 @@ import (
 const usage = `remotectrl - build on a remote Mac, run in the local iOS Simulator
 
 Usage:
-  remotectrl init [flags]     detect workspace/scheme on the remote and write ` + config.FileName + `
+  remotectrl init [flags]     detect the remote project and write ` + config.GlobalName + `
   remotectrl run [flags]      build remotely, sync the .app here, install + launch in the Simulator
   remotectrl build [flags]    build remotely only
   remotectrl sync [flags]     sync the last remote build here and install + launch (no build)
@@ -34,8 +34,8 @@ Usage:
 Common flags (override the config file):
   --host --dir --workspace --project --scheme --target --configuration --arch --device
 
-Config is read from the nearest ` + config.FileName + ` above the current directory,
-falling back to ~/.config/remotectrl/config.toml.
+Config is read from ~/.config/remotectrl/` + config.GlobalName + ` when it exists,
+otherwise from the nearest ` + config.FileName + ` above the current directory.
 `
 
 func main() {
@@ -230,7 +230,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	var o overrides
 	o.bind(fs)
-	global := fs.Bool("global", false, "write ~/.config/remotectrl/config.toml instead of ./"+config.FileName)
+	global := fs.Bool("global", false, "write ~/.config/remotectrl/"+config.GlobalName+" instead of ./"+config.FileName)
 	force := fs.Bool("force", false, "overwrite an existing config")
 	fs.Parse(args)
 

@@ -11,8 +11,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// FileName is the per-project config file, discovered by walking up from cwd.
+// FileName is the project-local config, used only when no global config exists.
 const FileName = ".remotectrl.toml"
+
+// GlobalName is the user-level config under ~/.config/remotectrl. It takes
+// precedence over any project file.
+const GlobalName = "remotectrl.toml"
 
 type Config struct {
 	// Host is anything ssh accepts: a tailnet name, an ssh alias, user@host.
@@ -72,18 +76,25 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// GlobalPath is the fallback config used when no project file is found.
+// GlobalPath is the user-level config, preferred over any project file.
 func GlobalPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "remotectrl", "config.toml"), nil
+	return filepath.Join(home, ".config", "remotectrl", GlobalName), nil
 }
 
-// Find returns the nearest project config walking up from cwd, then the global
-// one. Returns "" when neither exists.
+// Find returns the global config when it exists, otherwise the nearest project
+// config walking up from cwd. Returns "" when neither exists.
 func Find() (string, error) {
+	g, err := GlobalPath()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(g); err == nil {
+		return g, nil
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -98,13 +109,6 @@ func Find() (string, error) {
 			break
 		}
 		dir = parent
-	}
-	g, err := GlobalPath()
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(g); err == nil {
-		return g, nil
 	}
 	return "", nil
 }
